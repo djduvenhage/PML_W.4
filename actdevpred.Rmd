@@ -1,0 +1,245 @@
+---
+title: 'Practical Machine Learning Assignment'
+author: "Dawid J Duvenhage"
+date: "September 19, 2017"
+output: html_document
+---
+
+##Conclusion
+####A reasonably sound "Random Forest Model"" is developed and successfully validated against 20 unknown observations. 
+
+####Despite a significant amount of missing observations in the training and testing data a surprisingly accurate model is developed that predicts well against blind data.
+
+
+##A. Background
+####"Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset)."
+
+####The training data for this project are available here:
+####https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+####The test data are available here:
+####https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+##-------------------------------------------------------------------------------------
+##B. Basic System Setup
+###B1. Loading libraries
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+suppressMessages(library(caret))
+suppressMessages(library(gbm))
+suppressMessages(library(AppliedPredictiveModeling))
+suppressMessages(library(ElemStatLearn))
+suppressMessages(library(randomForest))		
+suppressMessages(library(dplyr))
+suppressMessages(library(plyr))
+suppressMessages(library(lubridate))	 # for year() function below
+suppressMessages(library(forecast))	 # for forecasting
+suppressMessages(library(e1071))	
+suppressMessages(library(ggplot2))
+suppressMessages(library(cluster))       # for clustering dendogram using pam
+suppressMessages(library(corrgram))
+suppressMessages(library(rpart))         #dtree ... classical decision tree 
+suppressMessages(library(rpart.plot)) 
+suppressMessages(library(party))         #ctree ... conditional inference tree
+```
+
+###B2. Setting up work directory, file paths, and downloading files
+####a. Set working directory
+```{r, echo=FALSE, results='hide'}
+setwd("C:\\Users\\Dawid J Duvenhage\\Desktop\\Coursera Courses\\Data Scientist Specialization\\8_Practical Machine Learning\\Week 4 PML Lecture Notes\\Assignment")
+```
+
+####b. Important: Set correct file path
+```{r, echo=FALSE, results='hide'}
+filepath <- "C:\\Users\\Dawid J Duvenhage\\Desktop\\Coursera Courses\\Data Scientist Specialization\\8_Practical Machine Learning\\Week 4 PML Lecture Notes\\Assignment\\assignment"
+```  
+
+####c. Create work folder to extract and write data to:
+```{r}
+if(!file.exists("./assignment")){dir.create("./assignment")}
+```
+
+####d. Setting file download url's:
+```{r}
+fileUrl_training <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+fileUrl_testing <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+```
+####e. Download raw data files:
+```{r}
+download.file(fileUrl_training,destfile="./assignment/pml-training.csv")
+download.file(fileUrl_testing,destfile="./assignment/pml-testing.csv")
+```
+
+##-------------------------------------------------------------------------------------
+##C. Data Processing, Cleanup, and Exploration
+###C1. Read the raw data.csv files from the folder location
+####This line of code will likely take a couple of minutes - be patient!
+```{r}
+training_raw <- read.csv("./assignment/pml-training.csv")
+```
+
+###C2. Initial data exploration
+####Inspecting training raw data file calling "str()" and "length(is.na(training_raw))" reveals several missing data sets in the form of 'NA', "#DIV/0", and blanks as "" (only the first 15 lines of the raw data file is shown below).
+```{r}
+object.size(training_raw)
+str(training_raw, list.len=15)
+length(is.na(training_raw))
+summary(training_raw$classe)            #or: table(training$classe)
+summary(training_raw$user_name)
+```
+
+###C3. Clean Data Step 1 - all missing data to 'NA'
+####To get clean workable "training and testing" data sets the files are reloaded and the "#DIV/0", and blanks as "",  replaced as 'NA'.
+####Reloading the data will likely take a couple of minues - be patient!
+```{r}
+training_clean <- read.csv("./assignment/pml-training.csv", na.strings=c("NA", "#DIV/0!", ""))
+dim(training_clean)
+#object.size(training_clean)
+#class(training_clean)
+#str(training_clean, list.len=15)
+
+testing_clean <- read.csv("./assignment/pml-testing.csv", na.strings=c("NA", "#DIV/0!", ""))
+dim(testing_clean)
+#object.size(testing_clean)
+#class(testing_clean)
+#str(testing_clean, list.len=15)
+```
+
+####Peruse "classe" to predict:
+```{r}
+prop.table(table(training_clean$user_name, training_clean$classe), 1)
+```
+
+###C4. Clean Data Step 2 - Remove non-data columns
+####Rows 1 through 6 are non-data columns (X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window), and therefor removed.
+```{r}
+training_subsetA <- training_clean[, 7:160]
+dim(training_subsetA)
+
+testing_subsetA <- testing_clean[, 7:160]
+dim(testing_subsetA)
+```
+
+###C5. Clean Data Step 3 - Remove 'all-NA' data columns
+####Remove all the columns containing "all" 'NA' data.
+```{r}
+training_subset  <- training_subsetA[,colSums(is.na(training_subsetA))==0]        
+testing_subset <- testing_subsetA[,colSums(is.na(testing_subsetA))==0] 
+```
+
+###C6. Model Data Partitioning
+####Split the training data set into two data subsets using a 70/30 split of the data (one for "training" and one for "testing" purposes).
+```{r}
+train_subset <- training_subset        
+#dim(train_subset)                                                                                            
+
+test_subset <- testing_subset            
+#dim(test_subset)
+
+inTrain <- createDataPartition(train_subset$classe, p = 0.70, list = F)
+
+training <- train_subset[inTrain, ]
+#dim(training)
+
+testing <- train_subset[-inTrain, ]
+#dim(testing)
+```
+
+###C7. Exploratory Graph on cleaned training data
+####A Corrgram of "all" the variables in the cleaned training data set reveal a significant number of non-correlated variables (i.e. the red blocks with diagonal line from top left to lower right - the significance of each observation is highlighted by color tone, i.e. the darker the block the more uncorrelated). The blue blocks (with correlation line diagonally from lower left to upper right) indicate variables that do corrolate, with lighter blue blocks indicating lower significance and the darker blue suggesting variables having a stronger correlation.
+```{r}
+corrgram(training, order=TRUE, lower.panel=panel.shade, upper.panel=NULL, main="Corrgram of Cleaned Training data")
+```
+
+##-------------------------------------------------------------------------------------
+##D. Model Development, Selection, Testing, and Validation
+###D1. Model Development
+####Model development considers four model types including, a Support Vector Machine (svm), a Classical Decision Inference Tree (rpart), a Conditional Inference Tree (ctree), and a Random Forest (randomForest). Response variables are predicted for each model type.
+
+####Support Vector Machine modelFit
+```{r}
+set.seed(1515151)
+modelFit1 <- svm(classe~., data=training)
+svm.pred <- predict(modelFit1, training, type="response")                               
+SVMcm1 <- confusionMatrix(data=svm.pred, reference=training$classe, positive='yes')               
+#can also use: table(training$classe, gbm..pred, dnn=c("Actual", "Predicted"))
+```
+
+####Classical Decision Inference Tree modelFit
+```{r}
+set.seed(1515151)
+modelFit2 <- rpart(classe~., data=training, method="class")                                                
+dtree.pred <- predict(modelFit2, training, type="class")
+CDTcm2 <- confusionMatrix(data=dtree.pred, reference=training$classe, positive='yes')
+```
+
+####Conditional Inference Tree modelFit
+```{r}
+set.seed(1515151)
+modelFit3 <- ctree(classe~., data=training)
+ctree.pred <- predict(modelFit3, training, type="response")
+CITcm3 <- confusionMatrix(data=ctree.pred, reference=training$classe, positive='yes')      
+```
+
+####Random Forest modelFit
+```{r}
+set.seed(1515151)
+modelFit4 <- randomForest(classe~., data=training, ntree=500, importance=T)
+training$pr4 <- predict(modelFit4 ,training)
+RFcm4 <- confusionMatrix(data=training$pr4, reference=training$classe, positive='yes')
+```
+
+##*************************************************************************
+###D2. Model Selection
+####Using "all" of the data variables model accuracy is evaluated. It is clear from the parameters in the table below that the Random Forest fits the algorithm very well, and it is therefore selected for further evaluation, decreasing the number of model variables according to the Variable Importance plot shown below.
+```{r}
+DevAcc <- data.frame(Model=c("Supp Vec Mach", "Clas Inf Tree", "Cond Inf Tree", "Rand Forest"), 
+                     Accuracy = (rbind(SVMcm1$overall[1], CDTcm2$overall[1], 
+                                       CITcm3$overall[1], RFcm4$overall[1])))
+
+DevAcc
+```                                        
+
+####Variable importance plots are useful for evaluating Random Forest models, and ultimately to select model parameters. The plot, generated using the "varImpPlot" function, is used to look at and select variables based on "Model Mean Accuracy" and "Mean Gini values". The 10 most significant variables are shown in the plot below.
+```{r}
+varImpPlot(modelFit4, sort=T, main="Variable Importance",n.var=10)
+```
+
+####
+```{r}
+varImp <- data.frame(importance(modelFit4, type=2))
+varImp$Variables <- row.names(varImp)
+varImp <- varImp[order(varImp$MeanDecreaseGini,decreasing = T ),]      
+varImp[1:10,]
+```
+
+####From the variable important plot and table above the seven most significant variables, excluding "num_window", i.e. roll_belt, yaw_belt, pitch_belt, magnet_dumbbell_z, pitch_forearm, magnet_dumbbell_y, and roll_forearm, are selected to build the final prediction model. The prediction accuracy for the adjusted Random Forest Model decreases slightly from 1.000 to 0.9992.
+```{r}
+set.seed(1515151)
+modelFit4_rerun <- randomForest(classe~ roll_belt + yaw_belt + pitch_belt + magnet_dumbbell_z + pitch_forearm + magnet_dumbbell_y + roll_forearm , data=training, ntree=500, importance=T)
+
+training$pr4_rerun <- predict(modelFit4_rerun ,training)
+confusionMatrix(data=training$pr4_rerun, reference=training$classe, positive='yes')
+```
+
+##*************************************************************************
+###D3. Model Testing
+####The redesigned Random Forest model, as expected, shows slightly lower accuracy when evaluated against the test data, but an acceptable out-of-sample error rate (i.e. [1 - accuracy]*100) is maintained.
+```{r}
+testing$pr4 <- predict(modelFit4_rerun, testing)
+RFcm4 <- confusionMatrix(data=testing$pr4, reference=testing$classe,positive='yes')
+
+AccuracyResults <- data.frame(Model=c(RFcm4$overall[1]))
+print(AccuracyResults)
+
+ErroRate <- (1 - RFcm4$overall[1]) * 100
+paste("out-of-sample error rate =", round(ErroRate, 2))
+
+```
+
+##*************************************************************************
+###D4. Model Validation
+####The final model (modelFit4_rerun) is validated against the "pml-testing.csv" data supplied (downloaded into the test_subset data frame). The model with 100 % accuracy predicts the 20 cases as supplied. The prediction results are printed below.
+```{r}
+test_subset$pr4 <- predict(modelFit4_rerun, test_subset)
+test_subset$pr4
+```
